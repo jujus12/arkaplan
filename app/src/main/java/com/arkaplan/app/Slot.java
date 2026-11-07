@@ -97,6 +97,7 @@ public class Slot {
             comp = Sh.run("cmd package resolve-activity --brief --user " + userId
                     + " " + pkg + " | tail -n 1");
         }
+        if (userId != 0) Sh.run("am start-user " + userId);
         String out;
         if (comp.contains("/")) {
             out = Sh.run("am start --user " + userId + " --display " + displayId
@@ -111,10 +112,24 @@ public class Slot {
         if (lower.contains("error") || lower.contains("exception")
                 || lower.contains("does not exist")) {
             String inst = Sh.run("pm list packages --user " + userId + " " + pkg);
+            StringBuilder key = new StringBuilder();
+            int n = 0;
+            for (String line : out.split("\n")) {
+                String l = line.toLowerCase();
+                if (n < 3 && (l.contains("exception") || l.contains("error")
+                        || l.contains("denial") || l.contains("not "))
+                        && !l.trim().startsWith("at ")) {
+                    key.append(line.trim()).append("\n");
+                    n++;
+                }
+            }
             stop();
             return "Oyun açılamadı (kullanıcı " + userId + ", paket " + pkg + ").\n"
-                    + "Komut sonucu: " + out + "\n"
-                    + "Bu kullanıcıda kurulu mu: " + (inst.isEmpty() ? "HAYIR / bulunamadı" : inst);
+                    + "ASIL HATA: " + (key.length() == 0 ? "(bulunamadı)" : key) + "\n"
+                    + "Resolve sonucu: " + comp + "\n"
+                    + "Bu kullanıcıda kurulu mu: "
+                    + (inst.isEmpty() ? "HAYIR / bulunamadı" : inst) + "\n\n"
+                    + "Tam çıktı: " + out;
         }
         return "Sanal ekran " + displayId + " açıldı.\n" + out;
     }
