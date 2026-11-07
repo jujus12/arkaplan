@@ -142,6 +142,8 @@ public class MainActivity extends Activity {
         col.addView(btn("Shizuku iznini ver", v -> askShizuku()));
         col.addView(btn("Çoklu pencere ayarlarını aç", v -> enableMultiWindow()));
         col.addView(btn("Kullanıcıları (profilleri) göster", v -> showUsers()));
+        col.addView(btn("Profil kısıtını kaldırmayı dene (Oyun 2 kullanıcısı)",
+                v -> liftRestriction()));
 
         for (int i = 0; i < 2; i++) {
             final int idx = i;
@@ -247,6 +249,28 @@ public class MainActivity extends Activity {
             return;
         }
         new Thread(() -> say(Sh.run("pm list users"))).start();
+    }
+
+    private void liftRestriction() {
+        if (!shizukuReady()) {
+            say("Önce Shizuku'yu başlat ve izni ver.");
+            return;
+        }
+        int u;
+        try {
+            u = Integer.parseInt(userEdit[1].getText().toString().trim());
+        } catch (NumberFormatException e) {
+            u = 10;
+        }
+        final int user = u;
+        new Thread(() -> {
+            String a = Sh.run("pm set-user-restriction --user " + user
+                    + " no_debugging_features 0");
+            String b = Sh.run("dumpsys user | grep -n -i -E 'UserInfo\\{|debugging'");
+            say("Komut sonucu: " + (a.isEmpty() ? "(hatasız bitti)" : a)
+                    + "\n\nKullanıcı/kısıt satırları:\n" + (b.isEmpty() ? "(yok)" : b)
+                    + "\n\nŞimdi Oyun 2'yi tekrar Başlat'ı dene.");
+        }).start();
     }
 
     // ------------------------------------------------------------- Slots
