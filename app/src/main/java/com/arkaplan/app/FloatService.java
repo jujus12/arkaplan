@@ -5,12 +5,14 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
-import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
-import android.content.ServiceConnection;
 import android.content.pm.ServiceInfo;
+import android.graphics.Bitmap;
+import android.graphics.Canvas;
+import android.graphics.Paint;
 import android.graphics.PixelFormat;
+import android.graphics.Rect;
 import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
@@ -18,7 +20,6 @@ import android.os.Looper;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.MotionEvent;
-import android.view.Surface;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 import android.view.View;
@@ -29,26 +30,32 @@ import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import java.io.BufferedReader;
+import java.io.DataInputStream;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.OutputStream;
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-import rikka.shizuku.Shizuku;
-
 /**
- * Floating always-on-top window. The chosen app runs on a trusted virtual display whose output
- * is drawn into this window, so it keeps running no matter what else the user touches.
+ * Floating always-on-top window. The chosen app runs on a trusted virtual display that lives in
+ * a Shizuku (shell) process; that process streams the picture to this window and receives the
+ * touches. Because the app runs on its own display it never goes to the background.
  */
 public class FloatService extends Service {
     public static final String ACTION_STOP = "com.arkaplan.app.STOP";
     private static final String CHANNEL = "arkaplan";
-    private static final int VERSION = 4;
+    private static final String KILL = "pkill -f 'arkaplan.app.[V]dService'";
 
     public static volatile String status = "Kapalı";
     public static volatile String detail = "";
     public static volatile boolean running = false;
 
     private final Handler ui = new Handler(Looper.getMainLooper());
-    private final ExecutorService bg = Executors.newSingleThreadExecutor();
+    private final ExecutorService writer = Executors.newSingleThreadExecutor();
 
     private WindowManager wm;
     private WindowManager.LayoutParams lp;
@@ -56,47 +63,16 @@ public class FloatService extends Service {
     private SurfaceView sv;
     private TextView title;
 
-    private Shizuku.UserServiceArgs args;
-    private volatile IVdService svc;
-    private volatile Surface surface;
-    private volatile int displayId = -1;
-    private boolean created = false;
+    private volatile SurfaceHolder holder;
+    private volatile Process proc;
+    private volatile OutputStream procIn;
+    private volatile boolean failed = false;
 
     private String pkg = "";
     private int dw = 1280, dh = 720, ddpi = 240;
     private int winWidthPx;
-
-    private final ServiceConnection conn = new ServiceConnection() {
-        @Override
-        public void onServiceConnected(ComponentName name, IBinder binder) {
-            if (binder != null && binder.pingBinder()) {
-                svc = IVdService.Stub.asInterface(binder);
-                setStatus("Shizuku servisi bağlandı.");
-                tryCreate();
-            } else {
-                diagnose("Servis bağlandı ama yanıt vermiyor (binder "
-                        + (binder == null ? "yok" : "ölü") + ").");
-            }
-        }
-
-        @Override
-        public void onBindingDied(ComponentName name) {
-            diagnose("Servis süreci öldü (onBindingDied).");
-        }
-
-        @Override
-        public void onNullBinding(ComponentName name) {
-            diagnose("Servis boş döndü (onNullBinding).");
-        }
-
-        @Override
-        public void onServiceDisconnected(ComponentName name) {
-            svc = null;
-            created = false;
-            displayId = -1;
-            setStatus("Shizuku servisi koptu.");
-        }
-    };
+    private Bitmap bmp;
+    private final Paint paint = new Paint(Paint.FILTER_BITMAP_FLAG);
 
     // ----------------------------------------------------------- lifecycle
 
@@ -126,10 +102,11 @@ public class FloatService extends Service {
             return START_NOT_STICKY;
         }
         running = true;
+        failed = false;
         detail = "";
         setStatus("Pencere açılıyor...");
         buildWindow();
-        bindShizuku();
+        startStream();
         return START_NOT_STICKY;
     }
 
@@ -158,19 +135,27 @@ public class FloatService extends Service {
         } catch (Throwable ignored) {
         }
         root = null;
-        final IVdService s = svc;
-        final Shizuku.UserServiceArgs a = args;
-        bg.execute(() -> {
+        final Process p = proc;
+        final OutputStream o = procIn;
+        new Thread(() -> {
             try {
-                if (s != null) s.release();
+                if (o != null) {
+                    o.write("q\n".getBytes(StandardCharsets.UTF_8));
+                    o.flush();
+                }
             } catch (Throwable ignored) {
             }
             try {
-                if (a != null) Shizuku.unbindUserService(a, conn, true);
+                Thread.sleep(300);
+            } catch (InterruptedException ignored) {
+            }
+            try {
+                if (p != null) p.destroy();
             } catch (Throwable ignored) {
             }
-        });
-        bg.shutdown();
+            Sh.run(KILL);
+        }).start();
+        writer.shutdown();
         status = "Kapalı";
         super.onDestroy();
     }
@@ -194,6 +179,10 @@ public class FloatService extends Service {
         });
     }
 
+    private synchronized void addDetail(String s) {
+        detail = detail.isEmpty() ? s : detail + "\n" + s;
+    }
+
     private void toast(String s) {
         ui.post(() -> Toast.makeText(getApplicationContext(), s, Toast.LENGTH_LONG).show());
     }
@@ -204,9 +193,8 @@ public class FloatService extends Service {
 
         root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackgroundColor(0xCC202020);
+        root.setBackgroundColor(0xFF202020);
 
-        // top bar: drag handle / status, transparency, smaller, bigger, close
         LinearLayout bar = new LinearLayout(this);
         bar.setOrientation(LinearLayout.HORIZONTAL);
         bar.setGravity(Gravity.CENTER_VERTICAL);
@@ -224,7 +212,13 @@ public class FloatService extends Service {
         alpha.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override
             public void onProgressChanged(SeekBar s, int p, boolean user) {
-                if (sv != null) sv.setAlpha(0.2f + p / 100f);
+                if (lp != null && root != null) {
+                    lp.alpha = 0.2f + p / 100f;
+                    try {
+                        wm.updateViewLayout(root, lp);
+                    } catch (Throwable ignored) {
+                    }
+                }
             }
 
             @Override
@@ -246,38 +240,17 @@ public class FloatService extends Service {
         sv.getHolder().setFixedSize(dw, dh);
         sv.getHolder().addCallback(new SurfaceHolder.Callback() {
             @Override
-            public void surfaceCreated(SurfaceHolder holder) {
-                surface = holder.getSurface();
-                if (created) {
-                    final IVdService s = svc;
-                    final Surface sf = surface;
-                    bg.execute(() -> {
-                        try {
-                            if (s != null) s.setSurface(sf);
-                        } catch (Throwable ignored) {
-                        }
-                    });
-                } else {
-                    tryCreate();
-                }
+            public void surfaceCreated(SurfaceHolder h) {
+                holder = h;
             }
 
             @Override
-            public void surfaceChanged(SurfaceHolder holder, int format, int w, int h) {
+            public void surfaceChanged(SurfaceHolder h, int format, int w, int hh) {
             }
 
             @Override
-            public void surfaceDestroyed(SurfaceHolder holder) {
-                surface = null;
-                final IVdService s = svc;
-                if (created && s != null) {
-                    bg.execute(() -> {
-                        try {
-                            s.setSurface(null);
-                        } catch (Throwable ignored) {
-                        }
-                    });
-                }
+            public void surfaceDestroyed(SurfaceHolder h) {
+                holder = null;
             }
         });
         sv.setOnTouchListener(this::onSurfaceTouch);
@@ -340,133 +313,120 @@ public class FloatService extends Service {
     }
 
     private boolean onSurfaceTouch(View v, MotionEvent e) {
-        final IVdService s = svc;
-        if (s == null || displayId < 0) return true;
-        int act;
-        switch (e.getActionMasked()) {
-            case MotionEvent.ACTION_DOWN:
-                act = MotionEvent.ACTION_DOWN;
-                break;
-            case MotionEvent.ACTION_MOVE:
-                act = MotionEvent.ACTION_MOVE;
-                break;
-            case MotionEvent.ACTION_UP:
-                act = MotionEvent.ACTION_UP;
-                break;
-            case MotionEvent.ACTION_CANCEL:
-                act = MotionEvent.ACTION_CANCEL;
-                break;
-            default:
-                return true;
+        final OutputStream o = procIn;
+        if (o == null) return true;
+        int act = e.getActionMasked();
+        if (act != MotionEvent.ACTION_DOWN && act != MotionEvent.ACTION_MOVE
+                && act != MotionEvent.ACTION_UP && act != MotionEvent.ACTION_CANCEL) {
+            return true;
         }
         float x = e.getX() * dw / Math.max(1, v.getWidth());
         float y = e.getY() * dh / Math.max(1, v.getHeight());
+        final byte[] line = ("t " + act + " " + x + " " + y + " " + e.getDownTime() + "\n")
+                .getBytes(StandardCharsets.UTF_8);
         try {
-            s.touch(displayId, act, x, y, e.getDownTime());
+            writer.execute(() -> {
+                try {
+                    o.write(line);
+                    o.flush();
+                } catch (Throwable ignored) {
+                }
+            });
         } catch (Throwable ignored) {
         }
         return true;
     }
 
-    // ------------------------------------------------------------ Shizuku
+    // ------------------------------------------------------------- stream
 
-    private void bindShizuku() {
+    private void startStream() {
+        Thread t = new Thread(() -> {
+            try {
+                Sh.run(KILL);
+                String cmd = "CLASSPATH=" + getPackageCodePath()
+                        + " exec app_process /system/bin " + VdService.class.getName()
+                        + " run " + pkg + " " + dw + " " + dh + " " + ddpi;
+                final Process p = Sh.spawn(cmd);
+                proc = p;
+                procIn = p.getOutputStream();
+                setStatus("Ekran kuruluyor...");
+
+                Thread err = new Thread(() -> {
+                    try {
+                        BufferedReader r = new BufferedReader(
+                                new InputStreamReader(p.getErrorStream()));
+                        StringBuilder sb = new StringBuilder();
+                        String l;
+                        while ((l = r.readLine()) != null) {
+                            if (sb.length() < 2500) sb.append(l).append('\n');
+                        }
+                        if (sb.length() > 0) addDetail("Süreç çıktısı:\n" + sb);
+                    } catch (Throwable ignored) {
+                    }
+                }, "arkaplan-err");
+                err.setDaemon(true);
+                err.start();
+
+                readLoop(p.getInputStream());
+            } catch (Throwable th) {
+                failed = true;
+                setStatus("Hata");
+                addDetail("Başlatma hatası: " + th);
+            } finally {
+                if (running && !failed) setStatus("Bağlantı koptu");
+            }
+        }, "arkaplan-read");
+        t.start();
+    }
+
+    private void readLoop(InputStream is) throws Exception {
+        DataInputStream in = new DataInputStream(new java.io.BufferedInputStream(is, 1 << 16));
+        byte[] buf = new byte[0];
+        while (true) {
+            int type = in.read();
+            if (type < 0) break;
+            int len = in.readInt();
+            if (len < 0 || len > 64 * 1024 * 1024) throw new java.io.IOException("bozuk paket");
+            if (buf.length < len) buf = new byte[len];
+            in.readFully(buf, 0, len);
+            if (type == 1) {
+                handleText(new String(buf, 0, len, StandardCharsets.UTF_8));
+            } else if (type == 2) {
+                drawFrame(buf, len);
+            }
+        }
+    }
+
+    private void handleText(String s) {
+        if (s.startsWith("ST:")) {
+            setStatus(s.substring(3));
+        } else if (s.startsWith("ER:")) {
+            failed = true;
+            setStatus("Hata");
+            addDetail(s.substring(3));
+            toast(s.substring(3));
+        } else if (s.startsWith("WN:")) {
+            addDetail(s.substring(3));
+        }
+    }
+
+    private void drawFrame(byte[] buf, int len) {
+        SurfaceHolder hd = holder;
+        if (hd == null || len < 8) return;
+        ByteBuffer hb = ByteBuffer.wrap(buf);
+        int w = hb.getInt(0);
+        int h = hb.getInt(4);
+        if (w <= 0 || h <= 0 || len < 8 + w * h * 4) return;
+        if (bmp == null || bmp.getWidth() != w || bmp.getHeight() != h) {
+            bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+        }
+        bmp.copyPixelsFromBuffer(ByteBuffer.wrap(buf, 8, w * h * 4));
+        Canvas c = hd.lockCanvas();
+        if (c == null) return;
         try {
-            if (!Shizuku.pingBinder()
-                    || Shizuku.checkSelfPermission()
-                    != android.content.pm.PackageManager.PERMISSION_GRANTED) {
-                setStatus("Shizuku hazır değil (başlat ve izin ver).");
-                toast("Shizuku hazır değil. Ana ekranda Shizuku iznini ver.");
-                return;
-            }
-            args = new Shizuku.UserServiceArgs(
-                    new ComponentName(getPackageName(), VdService.class.getName()))
-                    .daemon(false)
-                    .processNameSuffix("vd")
-                    .debuggable(false)
-                    .version(VERSION);
-            Shizuku.bindUserService(args, conn);
-            setStatus("Shizuku servisine bağlanılıyor...");
-            ui.postDelayed(() -> {
-                if (running && svc == null) diagnose("Servis 12 sn içinde bağlanmadı.");
-            }, 12000);
-        } catch (Throwable t) {
-            setStatus("Shizuku hatası: " + t);
-        }
-    }
-
-    private void diagnose(String why) {
-        setStatus("Bağlantı sorunu");
-        if (bg.isShutdown()) return;
-        bg.execute(() -> {
-            StringBuilder sb = new StringBuilder(why).append("\n");
-            try {
-                sb.append("Shizuku sürüm: ").append(Shizuku.getVersion())
-                        .append(", uid: ").append(Shizuku.getUid()).append("\n");
-            } catch (Throwable t) {
-                sb.append("Shizuku bilgisi alınamadı: ").append(t).append("\n");
-            }
-            String ps = Sh.run("ps -A | grep -i arkaplan");
-            sb.append("Süreçler:\n").append(ps.isEmpty() ? "(arkaplan süreci yok)" : ps)
-                    .append("\n");
-            String crash = Sh.run("logcat -b crash -d -t 80 | tail -n 12");
-            sb.append("Çökme kaydı:\n").append(crash.isEmpty() ? "(yok)" : crash).append("\n");
-            String log = Sh.run("logcat -d -t 4000 | grep -i -E "
-                    + "'shizuku|AndroidRuntime|FATAL|arkaplan:vd|VdService'"
-                    + " | grep -v -E 'BufferQueue|PowerHal|ScnModule|RecentTasks|mtk-brm'"
-                    + " | tail -n 10");
-            sb.append("Kayıt:\n").append(log.isEmpty() ? "(ilgili satır yok)" : log);
-            detail = sb.toString();
-        });
-    }
-
-    private synchronized void tryCreate() {
-        final IVdService s = svc;
-        final Surface sf = surface;
-        if (s == null || sf == null || created) return;
-        created = true;
-        bg.execute(() -> {
-            try {
-                setStatus("Ekran oluşturuluyor...");
-                String r = s.createDisplay(sf, dw, dh, ddpi);
-                if (r == null || !r.startsWith("OK:")) {
-                    created = false;
-                    setStatus("Ekran hatası");
-                    detail = r == null ? "Ekran oluşturulamadı" : r;
-                    toast(r == null ? "Ekran oluşturulamadı" : r);
-                    return;
-                }
-                String[] p = r.split(":");
-                displayId = Integer.parseInt(p[1]);
-                setStatus("Ekran " + displayId + " hazır, oyun açılıyor...");
-                launchApp();
-            } catch (Throwable t) {
-                created = false;
-                setStatus("Hata: " + t);
-                toast("Hata: " + t);
-            }
-        });
-    }
-
-    private void launchApp() {
-        // Resolve the launcher component first ("-p" alone fails to resolve on this device).
-        String comp = Sh.run("cmd package resolve-activity --brief --user 0"
-                + " -a android.intent.action.MAIN -c android.intent.category.LAUNCHER "
-                + pkg + " | tail -n 1");
-        String out;
-        if (!comp.contains("/")) {
-            out = "Error: açılış etkinliği bulunamadı: " + comp;
-        } else {
-            // -S restarts the app so it really opens on the new display
-            out = Sh.run("am start -S --user 0 --display " + displayId + " -n " + comp);
-        }
-        String low = out.toLowerCase();
-        if (low.contains("exception") || low.contains("error")) {
-            setStatus("Uygulama açılamadı");
-            detail = out;
-            toast("Uygulama açılamadı:\n" + out);
-        } else {
-            setStatus("Çalışıyor (ekran " + displayId + ")");
+            c.drawBitmap(bmp, null, new Rect(0, 0, c.getWidth(), c.getHeight()), paint);
+        } finally {
+            hd.unlockCanvasAndPost(c);
         }
     }
 }

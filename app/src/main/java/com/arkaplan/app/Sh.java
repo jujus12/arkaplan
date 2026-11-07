@@ -29,6 +29,15 @@ public final class Sh {
         }
     }
 
+    /** Starts a long-running shell-privileged process and returns it (caller manages streams). */
+    public static Process spawn(String cmd) throws Exception {
+        Method m = Shizuku.class.getDeclaredMethod(
+                "newProcess", String[].class, String[].class, String.class);
+        m.setAccessible(true);
+        return (Process) m.invoke(null,
+                new Object[]{new String[]{"sh", "-c", cmd}, null, null});
+    }
+
     private static String read(InputStream in) {
         try {
             ByteArrayOutputStream bo = new ByteArrayOutputStream();

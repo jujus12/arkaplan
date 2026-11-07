@@ -241,7 +241,7 @@ public class MainActivity extends Activity {
         final String p = pkg;
         new Thread(() -> {
             String out = Sh.run("CLASSPATH=" + apk + " app_process /system/bin "
-                    + VdService.class.getName() + " " + p);
+                    + VdService.class.getName() + " test " + p);
             FloatService.detail = out.isEmpty() ? "(çıktı yok)" : out;
             FloatService.status = "Ekran testi bitti";
         }).start();

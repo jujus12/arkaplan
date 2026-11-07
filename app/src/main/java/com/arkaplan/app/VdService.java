@@ -97,6 +97,157 @@ public class VdService extends IVdService.Stub {
      * Creates the trusted display, optionally launches the package on it, prints every step.
      */
     public static void main(String[] args) {
+        if (args.length > 0 && args[0].equals("run")) {
+            runStream(args);
+            return;
+        }
+        selfTest(args.length > 1 ? new String[]{args[1]} : new String[0]);
+    }
+
+    // ---------------------------------------------------------- stream mode
+
+    private static void send(java.io.OutputStream os, Object lock, int type,
+                             byte[] data, int off, int len) {
+        try {
+            synchronized (lock) {
+                os.write(type);
+                os.write(len >>> 24);
+                os.write(len >>> 16);
+                os.write(len >>> 8);
+                os.write(len);
+                os.write(data, off, len);
+                os.flush();
+            }
+        } catch (Throwable t) {
+            System.exit(0); // the app is gone
+        }
+    }
+
+    private static void sendText(java.io.OutputStream os, Object lock, String prefix, String s) {
+        byte[] b = (prefix + s).getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        send(os, lock, 1, b, 0, b.length);
+    }
+
+    private static void putInt(byte[] b, int o, int v) {
+        b[o] = (byte) (v >>> 24);
+        b[o + 1] = (byte) (v >>> 16);
+        b[o + 2] = (byte) (v >>> 8);
+        b[o + 3] = (byte) v;
+    }
+
+    /**
+     * Long-running mode, started by the app through Shizuku:
+     * app_process ... VdService run PACKAGE W H DPI
+     * stdout: packets [type:1][len:4][payload] (1 = text, 2 = frame: w, h, RGBA pixels)
+     * stdin : lines "t ACTION X Y DOWNTIME" (touch) and "q" (quit)
+     */
+    private static void runStream(String[] a) {
+        final java.io.OutputStream os = new java.io.BufferedOutputStream(
+                new java.io.FileOutputStream(java.io.FileDescriptor.out), 1 << 16);
+        System.setOut(System.err);
+        final Object lock = new Object();
+        try {
+            final String pkg = a[1];
+            final int w = Integer.parseInt(a[2]);
+            final int h = Integer.parseInt(a[3]);
+            final int dpi = Integer.parseInt(a[4]);
+            sendText(os, lock, "ST:", "Ekran kuruluyor...");
+            final VdService s = new VdService();
+
+            android.os.HandlerThread ht = new android.os.HandlerThread("frames");
+            ht.start();
+            final android.media.ImageReader reader = android.media.ImageReader.newInstance(
+                    w, h, android.graphics.PixelFormat.RGBA_8888, 3);
+            final long[] last = {0};
+            final boolean[] first = {true};
+            final byte[][] fb = new byte[1][];
+            reader.setOnImageAvailableListener(r -> {
+                android.media.Image img = null;
+                try {
+                    img = r.acquireLatestImage();
+                    if (img == null) return;
+                    long now = SystemClock.uptimeMillis();
+                    if (now - last[0] < 66) return; // about 15 frames per second
+                    last[0] = now;
+                    android.media.Image.Plane p = img.getPlanes()[0];
+                    java.nio.ByteBuffer b = p.getBuffer();
+                    int rs = p.getRowStride();
+                    int need = 8 + w * h * 4;
+                    if (fb[0] == null || fb[0].length != need) fb[0] = new byte[need];
+                    byte[] f = fb[0];
+                    putInt(f, 0, w);
+                    putInt(f, 4, h);
+                    if (rs == w * 4) {
+                        b.get(f, 8, w * h * 4);
+                    } else {
+                        for (int y = 0; y < h; y++) {
+                            b.position(y * rs);
+                            b.get(f, 8 + y * w * 4, w * 4);
+                        }
+                    }
+                    send(os, lock, 2, f, 0, need);
+                    if (first[0]) {
+                        first[0] = false;
+                        sendText(os, lock, "ST:", "Çalışıyor");
+                    }
+                } catch (Throwable ignored) {
+                } finally {
+                    if (img != null) img.close();
+                }
+            }, new Handler(ht.getLooper()));
+
+            String res = s.createDisplay(reader.getSurface(), w, h, dpi);
+            if (!res.startsWith("OK:")) {
+                sendText(os, lock, "ER:", "Ekran kurulamadı:\n" + res);
+                System.exit(0);
+            }
+            final int id = Integer.parseInt(res.split(":")[1]);
+            sendText(os, lock, "ST:", "Ekran " + id + " hazır, oyun açılıyor...");
+
+            String comp = exec("cmd package resolve-activity --brief --user 0"
+                    + " -a android.intent.action.MAIN -c android.intent.category.LAUNCHER "
+                    + pkg + " | tail -n 1");
+            if (!comp.contains("/")) {
+                sendText(os, lock, "ER:", "Açılış etkinliği bulunamadı: " + comp);
+                s.release();
+                System.exit(0);
+            }
+            String o = exec("am start -S --user 0 --display " + id + " -n " + comp);
+            String lo = o.toLowerCase();
+            if (lo.contains("error") || lo.contains("exception")) {
+                sendText(os, lock, "ER:", "Uygulama açılamadı:\n" + o);
+                s.release();
+                System.exit(0);
+            }
+            sendText(os, lock, "ST:", "Oyun başlatıldı, görüntü bekleniyor...");
+
+            java.io.BufferedReader br = new java.io.BufferedReader(
+                    new java.io.InputStreamReader(System.in));
+            boolean touchWarned = false;
+            String line;
+            while ((line = br.readLine()) != null) {
+                if (line.equals("q")) break;
+                if (line.startsWith("t ")) {
+                    String[] p = line.split(" ");
+                    s.touch(id, Integer.parseInt(p[1]), Float.parseFloat(p[2]),
+                            Float.parseFloat(p[3]), Long.parseLong(p[4]));
+                    String le = s.lastError();
+                    if (!touchWarned && le.startsWith("dokunuş")) {
+                        touchWarned = true;
+                        sendText(os, lock, "WN:", le);
+                    }
+                }
+            }
+            s.release();
+        } catch (Throwable t) {
+            sendText(os, lock, "ER:", describe(t));
+        }
+        System.exit(0);
+    }
+
+    // ------------------------------------------------------------ self test
+
+    private static void selfTest(String[] args) {
         final java.io.PrintStream out = System.out;
         Thread wd = new Thread(() -> {
             try {
