@@ -23,9 +23,20 @@ public class Slot {
     public volatile long lastFrameMs = 0;
     public volatile long startMs = 0;
 
-    private VirtualDisplay vd;
-    private ImageReader reader;
+    private volatile VirtualDisplay vd;
+    private volatile ImageReader reader;
     private HandlerThread thread;
+
+    /** Show the display on a visible surface; null goes back to the hidden one. */
+    public void setViewSurface(android.view.Surface s) {
+        try {
+            VirtualDisplay d = vd;
+            ImageReader r = reader;
+            if (d == null || r == null) return;
+            d.setSurface(s != null ? s : r.getSurface());
+        } catch (Throwable ignored) {
+        }
+    }
 
     private Slot(int index) {
         this.index = index;

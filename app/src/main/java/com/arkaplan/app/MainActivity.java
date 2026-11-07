@@ -160,7 +160,10 @@ public class MainActivity extends Activity {
             row.setOrientation(LinearLayout.HORIZONTAL);
             Button start = btn("Başlat", v -> startSlot(idx));
             Button stop = btn("Durdur", v -> stopSlot(idx));
+            Button view = btn("Görüntü", v -> toggleViewer(idx));
             row.addView(start, new LinearLayout.LayoutParams(0,
+                    LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+            row.addView(view, new LinearLayout.LayoutParams(0,
                     LinearLayout.LayoutParams.WRAP_CONTENT, 1));
             row.addView(stop, new LinearLayout.LayoutParams(0,
                     LinearLayout.LayoutParams.WRAP_CONTENT, 1));
@@ -290,8 +293,25 @@ public class MainActivity extends Activity {
         new Thread(() -> say(s.start(getApplicationContext()))).start();
     }
 
+    private void toggleViewer(int idx) {
+        final Slot s = Slot.ALL[idx];
+        if (!s.running()) {
+            say("Önce oyunu başlat.");
+            return;
+        }
+        if (!android.provider.Settings.canDrawOverlays(this)) {
+            say("Üstte gösterme izni lazım. Açılan ekranda Arka Plan'a izin ver, "
+                    + "geri gelip tekrar Görüntü'ye bas.");
+            startActivity(new Intent(android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    android.net.Uri.parse("package:" + getPackageName())));
+            return;
+        }
+        Viewer.toggle(getApplicationContext(), s);
+    }
+
     private void stopSlot(int idx) {
         final Slot s = Slot.ALL[idx];
+        runOnUiThread(() -> Viewer.close(s));
         new Thread(() -> {
             s.stop();
             if (!Slot.anyRunning()) {
