@@ -28,7 +28,7 @@
         </activity>
 
         <service
-            android:name=".KeepAliveService"
+            android:name=".FloatService"
             android:exported="false"
             android:foregroundServiceType="specialUse">
             <property

@@ -7,19 +7,19 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
-import android.os.SystemClock;
-import android.text.InputType;
+import android.provider.Settings;
 import android.util.TypedValue;
 import android.view.View;
 import android.widget.Button;
-import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -32,26 +32,23 @@ public class MainActivity extends Activity {
 
     private final Handler ui = new Handler(Looper.getMainLooper());
     private SharedPreferences prefs;
+    private String pkg = "";
 
     private TextView shizukuStatus;
-    private TextView log;
-    private final TextView[] pickLabel = new TextView[2];
-    private final EditText[] userEdit = new EditText[2];
-    private final TextView[] slotStatus = new TextView[2];
-    private final long[] lastFrames = new long[2];
-    private final long[] lastTick = new long[2];
+    private TextView pickLabel;
+    private TextView state;
 
     private final Shizuku.OnRequestPermissionResultListener permListener =
-            (code, result) -> runOnUiThread(this::refreshShizuku);
+            (code, result) -> runOnUiThread(this::refresh);
     private final Shizuku.OnBinderReceivedListener binderListener =
-            () -> runOnUiThread(this::refreshShizuku);
+            () -> runOnUiThread(this::refresh);
     private final Shizuku.OnBinderDeadListener deadListener =
-            () -> runOnUiThread(this::refreshShizuku);
+            () -> runOnUiThread(this::refresh);
 
     private final Runnable ticker = new Runnable() {
         @Override
         public void run() {
-            updateSlots();
+            refresh();
             ui.postDelayed(this, 1000);
         }
     };
@@ -60,27 +57,19 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle b) {
         super.onCreate(b);
         prefs = getSharedPreferences("arkaplan", MODE_PRIVATE);
-        for (int i = 0; i < 2; i++) {
-            Slot.ALL[i].pkg = prefs.getString("pkg" + i, "");
-            Slot.ALL[i].userId = prefs.getInt("user" + i, i == 0 ? 0 : 10);
-        }
-
+        pkg = prefs.getString("pkg", "");
         buildUi();
-
         Shizuku.addBinderReceivedListenerSticky(binderListener);
         Shizuku.addBinderDeadListener(deadListener);
         Shizuku.addRequestPermissionResultListener(permListener);
-
         if (Build.VERSION.SDK_INT >= 33) {
             requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 1);
         }
-        refreshShizuku();
     }
 
     @Override
     protected void onResume() {
         super.onResume();
-        refreshShizuku();
         ui.post(ticker);
     }
 
@@ -98,8 +87,6 @@ public class MainActivity extends Activity {
         Shizuku.removeRequestPermissionResultListener(permListener);
     }
 
-    // ---------------------------------------------------------------- UI
-
     private int dp(int v) {
         return (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v,
                 getResources().getDisplayMetrics());
@@ -109,7 +96,7 @@ public class MainActivity extends Activity {
         TextView t = new TextView(this);
         t.setText(s);
         t.setTextSize(bold ? 18 : 15);
-        t.setPadding(0, dp(6), 0, dp(2));
+        t.setPadding(0, dp(8), 0, dp(2));
         if (bold) t.setTypeface(null, android.graphics.Typeface.BOLD);
         return t;
     }
@@ -129,80 +116,37 @@ public class MainActivity extends Activity {
         col.setPadding(dp(16), dp(16), dp(16), dp(24));
         sv.addView(col);
 
-        col.addView(text("Arka Plan (deneme sürümü)", true));
-        col.addView(text("Test: oyunu başlat, ana ekrana çık, 30 sn sonra geri dön. "
-                + "Kare sayısı artmışsa oyun arka planda da çalışıyor demektir.", false));
+        col.addView(text("Arka Plan", true));
+        col.addView(text("Seçtiğin uygulama ekranda küçük bir pencerede üstte durur. "
+                + "Başka uygulamalara dokunsan da arka plana düşmez. "
+                + "Pencerenin üstündeki çubuktan saydamlığı ayarlarsın.", false));
 
         shizukuStatus = text("", false);
         col.addView(shizukuStatus);
-        col.addView(text("Mesaj kutusu (butonlara basınca sonuç burada çıkar):", true));
-        log = text("-", false);
-        log.setTextIsSelectable(true);
-        col.addView(log);
         col.addView(btn("Shizuku iznini ver", v -> askShizuku()));
-        col.addView(btn("Çoklu pencere ayarlarını aç", v -> enableMultiWindow()));
-        col.addView(btn("Kullanıcıları (profilleri) göster", v -> showUsers()));
-        col.addView(btn("Profil kısıtını kaldırmayı dene (Oyun 2 kullanıcısı)",
-                v -> liftRestriction()));
 
-        for (int i = 0; i < 2; i++) {
-            final int idx = i;
-            col.addView(text("— Oyun " + (i + 1) + " —", true));
-            pickLabel[i] = text("", false);
-            col.addView(pickLabel[i]);
-            col.addView(btn("Uygulama seç", v -> pickApp(idx)));
+        col.addView(text("1) Uygulama", true));
+        pickLabel = text("", false);
+        col.addView(pickLabel);
+        col.addView(btn("Uygulama seç", v -> pickApp()));
 
-            col.addView(text("Kullanıcı no (0 = normal, Shelter kopyası genelde 10):", false));
-            userEdit[i] = new EditText(this);
-            userEdit[i].setInputType(InputType.TYPE_CLASS_NUMBER);
-            userEdit[i].setText(String.valueOf(Slot.ALL[i].userId));
-            col.addView(userEdit[i]);
+        col.addView(text("2) Başlat", true));
+        col.addView(btn("Pencereyi aç ve uygulamayı başlat", v -> startFloat()));
+        col.addView(btn("Kapat", v -> stopService(new Intent(this, FloatService.class))));
+        state = text("", false);
+        col.addView(state);
 
-            LinearLayout row = new LinearLayout(this);
-            row.setOrientation(LinearLayout.HORIZONTAL);
-            Button start = btn("Başlat", v -> startSlot(idx));
-            Button stop = btn("Durdur", v -> stopSlot(idx));
-            Button view = btn("Görüntü", v -> toggleViewer(idx));
-            row.addView(start, new LinearLayout.LayoutParams(0,
-                    LinearLayout.LayoutParams.WRAP_CONTENT, 1));
-            row.addView(view, new LinearLayout.LayoutParams(0,
-                    LinearLayout.LayoutParams.WRAP_CONTENT, 1));
-            row.addView(stop, new LinearLayout.LayoutParams(0,
-                    LinearLayout.LayoutParams.WRAP_CONTENT, 1));
-            col.addView(row);
-
-            slotStatus[i] = text("", false);
-            col.addView(slotStatus[i]);
-            updatePickLabel(i);
-        }
-
+        col.addView(text("Not: Başlat, uygulamayı kapatıp yeniden açar (pencerede açılması için).",
+                false));
         setContentView(sv);
+        updatePick();
     }
 
-    private void say(String s) {
-        runOnUiThread(() -> {
-            log.setText(s);
-            android.widget.Toast.makeText(this, s, android.widget.Toast.LENGTH_LONG).show();
-        });
+    private void updatePick() {
+        pickLabel.setText("Uygulama: " + (pkg.isEmpty() ? "seçilmedi" : pkg));
     }
 
-    private void updatePickLabel(int i) {
-        String p = Slot.ALL[i].pkg;
-        pickLabel[i].setText("Uygulama: " + (p.isEmpty() ? "seçilmedi" : p));
-    }
-
-    // ----------------------------------------------------------- Shizuku
-
-    private boolean shizukuReady() {
-        try {
-            return Shizuku.pingBinder()
-                    && Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED;
-        } catch (Throwable t) {
-            return false;
-        }
-    }
-
-    private void refreshShizuku() {
+    private void refresh() {
         String s;
         try {
             if (!Shizuku.pingBinder()) {
@@ -216,6 +160,7 @@ public class MainActivity extends Activity {
             s = "Shizuku: hata " + t;
         }
         shizukuStatus.setText(s);
+        state.setText("Durum: " + FloatService.status);
     }
 
     private void askShizuku() {
@@ -225,65 +170,20 @@ public class MainActivity extends Activity {
                 Shizuku.requestPermission(REQ_SHIZUKU);
             }
         } catch (Throwable t) {
-            say("Shizuku hatası: " + t);
+            Toast.makeText(this, "Shizuku hatası: " + t, Toast.LENGTH_LONG).show();
         }
-        refreshShizuku();
+        refresh();
     }
 
-    private void enableMultiWindow() {
-        if (!shizukuReady()) {
-            say("Önce Shizuku'yu başlat ve izni ver.");
-            return;
-        }
-        new Thread(() -> {
-            String r = Sh.run("settings put global force_resizable_activities 1;"
-                    + " settings put global enable_freeform_support 1;"
-                    + " echo tamam");
-            say("Çoklu pencere ayarları: " + r);
-        }).start();
-    }
-
-    private void showUsers() {
-        if (!shizukuReady()) {
-            say("Önce Shizuku'yu başlat ve izni ver.");
-            return;
-        }
-        new Thread(() -> say(Sh.run("pm list users"))).start();
-    }
-
-    private void liftRestriction() {
-        if (!shizukuReady()) {
-            say("Önce Shizuku'yu başlat ve izni ver.");
-            return;
-        }
-        int u;
-        try {
-            u = Integer.parseInt(userEdit[1].getText().toString().trim());
-        } catch (NumberFormatException e) {
-            u = 10;
-        }
-        final int user = u;
-        new Thread(() -> {
-            String a = Sh.run("pm set-user-restriction --user " + user
-                    + " no_debugging_features 0");
-            String b = Sh.run("dumpsys user | grep -n -i -E 'UserInfo\\{|debugging'");
-            say("Komut sonucu: " + (a.isEmpty() ? "(hatasız bitti)" : a)
-                    + "\n\nKullanıcı/kısıt satırları:\n" + (b.isEmpty() ? "(yok)" : b)
-                    + "\n\nŞimdi Oyun 2'yi tekrar Başlat'ı dene.");
-        }).start();
-    }
-
-    // ------------------------------------------------------------- Slots
-
-    private void pickApp(int idx) {
+    private void pickApp() {
         Intent i = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER);
         PackageManager pm = getPackageManager();
         List<ResolveInfo> list = pm.queryIntentActivities(i, 0);
         final List<String[]> items = new ArrayList<>();
         for (ResolveInfo ri : list) {
-            String pkg = ri.activityInfo.packageName;
-            if (pkg.equals(getPackageName())) continue;
-            items.add(new String[]{String.valueOf(ri.loadLabel(pm)), pkg});
+            String p = ri.activityInfo.packageName;
+            if (p.equals(getPackageName())) continue;
+            items.add(new String[]{String.valueOf(ri.loadLabel(pm)), p});
         }
         Collections.sort(items, (a, c) -> a[0].compareToIgnoreCase(c[0]));
         String[] names = new String[items.size()];
@@ -291,92 +191,44 @@ public class MainActivity extends Activity {
             names[k] = items.get(k)[0] + "\n" + items.get(k)[1];
         }
         new AlertDialog.Builder(this)
-                .setTitle("Oyunu seç")
+                .setTitle("Uygulamayı seç")
                 .setItems(names, (d, which) -> {
-                    Slot.ALL[idx].pkg = items.get(which)[1];
-                    prefs.edit().putString("pkg" + idx, Slot.ALL[idx].pkg).apply();
-                    updatePickLabel(idx);
+                    pkg = items.get(which)[1];
+                    prefs.edit().putString("pkg", pkg).apply();
+                    updatePick();
                 })
                 .show();
     }
 
-    private void startSlot(int idx) {
-        if (!shizukuReady()) {
-            say("Önce Shizuku'yu başlat ve izni ver.");
+    private void startFloat() {
+        if (pkg.isEmpty()) {
+            Toast.makeText(this, "Önce uygulama seç.", Toast.LENGTH_LONG).show();
             return;
         }
-        final Slot s = Slot.ALL[idx];
+        if (!Settings.canDrawOverlays(this)) {
+            Toast.makeText(this, "Üstte gösterme izni lazım. Arka Plan'a izin ver, "
+                    + "geri gelip tekrar bas.", Toast.LENGTH_LONG).show();
+            startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    Uri.parse("package:" + getPackageName())));
+            return;
+        }
         try {
-            s.userId = Integer.parseInt(userEdit[idx].getText().toString().trim());
-        } catch (NumberFormatException e) {
-            s.userId = 0;
-        }
-        prefs.edit().putInt("user" + idx, s.userId).apply();
-        startForegroundService(new Intent(this, KeepAliveService.class));
-        say("Başlatılıyor...");
-        new Thread(() -> say(s.start(getApplicationContext()))).start();
-    }
-
-    private void toggleViewer(int idx) {
-        final Slot s = Slot.ALL[idx];
-        if (!s.running()) {
-            say("Önce oyunu başlat.");
+            if (!Shizuku.pingBinder()
+                    || Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
+                Toast.makeText(this, "Önce Shizuku'yu başlat ve izni ver.",
+                        Toast.LENGTH_LONG).show();
+                return;
+            }
+        } catch (Throwable t) {
+            Toast.makeText(this, "Shizuku hatası: " + t, Toast.LENGTH_LONG).show();
             return;
         }
-        if (Slot.OVERLAY_MODE) {
-            say("Bu modda ayrı görüntü penceresi gerekmez: oyun ekranındaki küçük "
-                    + "\"Overlay\" penceresinde görünür, dokunabilirsin.");
-            return;
-        }
-        if (!android.provider.Settings.canDrawOverlays(this)) {
-            say("Üstte gösterme izni lazım. Açılan ekranda Arka Plan'a izin ver, "
-                    + "geri gelip tekrar Görüntü'ye bas.");
-            startActivity(new Intent(android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                    android.net.Uri.parse("package:" + getPackageName())));
-            return;
-        }
-        Viewer.toggle(getApplicationContext(), s);
-    }
-
-    private void stopSlot(int idx) {
-        final Slot s = Slot.ALL[idx];
-        runOnUiThread(() -> Viewer.close(s));
-        new Thread(() -> {
-            s.stop();
-            if (!Slot.anyRunning()) {
-                stopService(new Intent(this, KeepAliveService.class));
-            }
-            say("Oyun " + (idx + 1) + " durduruldu.");
-        }).start();
-    }
-
-    private void updateSlots() {
-        long now = SystemClock.elapsedRealtime();
-        for (int i = 0; i < 2; i++) {
-            Slot s = Slot.ALL[i];
-            if (!s.running()) {
-                slotStatus[i].setText("Durum: kapalı");
-                lastFrames[i] = 0;
-                lastTick[i] = now;
-                continue;
-            }
-            if (Slot.OVERLAY_MODE) {
-                slotStatus[i].setText("Durum: çalışıyor | ikinci ekran " + s.displayId
-                        + " | süre: " + (now - s.startMs) / 1000 + " sn"
-                        + "\nOyun, ekrandaki küçük \"Overlay\" penceresinde görünür ve "
-                        + "dokunabilirsin.");
-                continue;
-            }
-            long f = s.frames;
-            long dt = Math.max(1, now - lastTick[i]);
-            long fps = (f - lastFrames[i]) * 1000 / dt;
-            lastFrames[i] = f;
-            lastTick[i] = now;
-            long since = s.lastFrameMs == 0 ? -1 : (now - s.lastFrameMs) / 1000;
-            long up = (now - s.startMs) / 1000;
-            slotStatus[i].setText("Durum: çalışıyor | sanal ekran " + s.displayId
-                    + "\nSüre: " + up + " sn | Kare: " + f + " | ~" + fps + " kare/sn"
-                    + "\nSon kare: " + (since < 0 ? "henüz yok" : since + " sn önce"));
-        }
+        stopService(new Intent(this, FloatService.class));
+        Intent i = new Intent(this, FloatService.class)
+                .putExtra("pkg", pkg)
+                .putExtra("w", 1280)
+                .putExtra("h", 720)
+                .putExtra("dpi", 240);
+        startForegroundService(i);
     }
 }
