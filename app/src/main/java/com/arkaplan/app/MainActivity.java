@@ -134,6 +134,21 @@ public class MainActivity extends Activity {
         col.addView(text("2) Başlat", true));
         col.addView(btn("Pencereyi aç ve uygulamayı başlat", v -> startFloat()));
         col.addView(btn("Kapat", v -> stopService(new Intent(this, FloatService.class))));
+        col.addView(btn("Eski ikinci ekranı kapat (Yer Paylaşımı / Overlay)", v -> {
+            if (!Shizuku.pingBinder()
+                    || Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
+                Toast.makeText(this, "Önce Shizuku'yu başlat ve izni ver.",
+                        Toast.LENGTH_LONG).show();
+                return;
+            }
+            new Thread(() -> {
+                String r = Sh.run("settings delete global overlay_display_devices;"
+                        + " settings delete global force_resizable_activities;"
+                        + " settings delete global enable_freeform_support; echo tamam");
+                runOnUiThread(() -> Toast.makeText(this, "İkinci ekran kapatıldı: " + r,
+                        Toast.LENGTH_LONG).show());
+            }).start();
+        }));
         state = text("", false);
         col.addView(state);
         detailView = text("", false);
