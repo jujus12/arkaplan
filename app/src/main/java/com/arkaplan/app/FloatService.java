@@ -41,7 +41,7 @@ import rikka.shizuku.Shizuku;
 public class FloatService extends Service {
     public static final String ACTION_STOP = "com.arkaplan.app.STOP";
     private static final String CHANNEL = "arkaplan";
-    private static final int VERSION = 3;
+    private static final int VERSION = 4;
 
     public static volatile String status = "Kapalı";
     public static volatile String detail = "";
@@ -406,9 +406,14 @@ public class FloatService extends Service {
             } catch (Throwable t) {
                 sb.append("Shizuku bilgisi alınamadı: ").append(t).append("\n");
             }
-            String log = Sh.run("logcat -d -t 600 | grep -i -E "
-                    + "'arkaplan|AndroidRuntime|FATAL|VdService|UserService|ServiceStarter'"
-                    + " | tail -n 14");
+            String ps = Sh.run("ps -A | grep -i arkaplan");
+            sb.append("Süreçler:\n").append(ps.isEmpty() ? "(arkaplan süreci yok)" : ps)
+                    .append("\n");
+            String crash = Sh.run("logcat -b crash -d -t 80 | tail -n 12");
+            sb.append("Çökme kaydı:\n").append(crash.isEmpty() ? "(yok)" : crash).append("\n");
+            String log = Sh.run("logcat -d -t 4000 | grep -i -E "
+                    + "'shizuku|AndroidRuntime|FATAL|arkaplan:vd|VdService'"
+                    + " | grep -v BufferQueue | tail -n 10");
             sb.append("Kayıt:\n").append(log.isEmpty() ? "(ilgili satır yok)" : log);
             detail = sb.toString();
         });

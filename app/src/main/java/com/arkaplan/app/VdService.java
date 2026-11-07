@@ -59,11 +59,8 @@ public class VdService extends IVdService.Stub {
     public VdService() {
         final CountDownLatch ready = new CountDownLatch(1);
         Thread t = new Thread(() -> {
-            if (Looper.getMainLooper() == null) {
-                Looper.prepareMainLooper();
-            } else {
-                Looper.prepare();
-            }
+            // Never touch the main looper here: Shizuku's starter prepares it itself.
+            Looper.prepare();
             handler = new Handler(Looper.myLooper());
             ready.countDown();
             Looper.loop();
