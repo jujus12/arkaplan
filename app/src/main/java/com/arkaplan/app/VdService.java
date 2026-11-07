@@ -118,9 +118,12 @@ public class VdService extends IVdService.Stub {
             out.println("3) ekran: " + res);
             if (res.startsWith("OK:") && args.length > 0) {
                 int id = Integer.parseInt(res.split(":")[1]);
-                out.println("4) uygulama başlatma:\n" + exec("am start -S --user 0 --display "
-                        + id + " -a android.intent.action.MAIN"
-                        + " -c android.intent.category.LAUNCHER -p " + args[0]));
+                String comp = exec("cmd package resolve-activity --brief --user 0"
+                        + " -a android.intent.action.MAIN -c android.intent.category.LAUNCHER "
+                        + args[0] + " | tail -n 1");
+                out.println("4a) bileşen: " + comp);
+                out.println("4b) uygulama başlatma:\n" + exec("am start -S --user 0 --display "
+                        + id + " -n " + comp));
                 Thread.sleep(5000);
                 String d = exec("dumpsys activity activities");
                 int shown = 0;

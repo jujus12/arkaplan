@@ -449,9 +449,17 @@ public class FloatService extends Service {
     }
 
     private void launchApp() {
-        // -S restarts the app so it really opens on the new display
-        String out = Sh.run("am start -S --user 0 --display " + displayId
-                + " -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -p " + pkg);
+        // Resolve the launcher component first ("-p" alone fails to resolve on this device).
+        String comp = Sh.run("cmd package resolve-activity --brief --user 0"
+                + " -a android.intent.action.MAIN -c android.intent.category.LAUNCHER "
+                + pkg + " | tail -n 1");
+        String out;
+        if (!comp.contains("/")) {
+            out = "Error: açılış etkinliği bulunamadı: " + comp;
+        } else {
+            // -S restarts the app so it really opens on the new display
+            out = Sh.run("am start -S --user 0 --display " + displayId + " -n " + comp);
+        }
         String low = out.toLowerCase();
         if (low.contains("exception") || low.contains("error")) {
             setStatus("Uygulama açılamadı");

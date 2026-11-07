@@ -26,6 +26,19 @@ jobs:
       - name: Build APK
         run: gradle assembleDebug --no-daemon
 
+      - name: Inspect APK (Shizuku classes)
+        continue-on-error: true
+        run: |
+          mkdir -p inspect && cd inspect
+          unzip -q -o ../app/build/outputs/apk/debug/app-debug.apk 'classes*.dex'
+          for f in classes*.dex; do
+            echo "== $f"
+            strings "$f" | grep -i -E 'shizuku.*(starter|server)|ServiceStarter|UserService' | sort -u | head -30
+          done
+          echo "== dependencies"
+          cd ..
+          gradle :app:dependencies --configuration debugRuntimeClasspath --no-daemon -q | grep -i rikka || true
+
       - name: Rename APK
         run: cp app/build/outputs/apk/debug/app-debug.apk arkaplan.apk
 
