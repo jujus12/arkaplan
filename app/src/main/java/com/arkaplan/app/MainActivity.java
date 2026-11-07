@@ -149,6 +149,7 @@ public class MainActivity extends Activity {
                         Toast.LENGTH_LONG).show());
             }).start();
         }));
+        col.addView(btn("Ekran testi (sorun arıyorum)", v -> runSelfTest()));
         state = text("", false);
         col.addView(state);
         detailView = text("", false);
@@ -220,6 +221,30 @@ public class MainActivity extends Activity {
                     updatePick();
                 })
                 .show();
+    }
+
+    private void runSelfTest() {
+        try {
+            if (!Shizuku.pingBinder()
+                    || Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
+                Toast.makeText(this, "Önce Shizuku'yu başlat ve izni ver.",
+                        Toast.LENGTH_LONG).show();
+                return;
+            }
+        } catch (Throwable t) {
+            Toast.makeText(this, "Shizuku hatası: " + t, Toast.LENGTH_LONG).show();
+            return;
+        }
+        FloatService.status = "Ekran testi çalışıyor (40 sn'ye kadar)...";
+        FloatService.detail = "";
+        final String apk = getPackageCodePath();
+        final String p = pkg;
+        new Thread(() -> {
+            String out = Sh.run("CLASSPATH=" + apk + " app_process /system/bin "
+                    + VdService.class.getName() + " " + p);
+            FloatService.detail = out.isEmpty() ? "(çıktı yok)" : out;
+            FloatService.status = "Ekran testi bitti";
+        }).start();
     }
 
     private void startFloat() {

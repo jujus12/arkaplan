@@ -72,6 +72,77 @@ public class VdService extends IVdService.Stub {
         }
     }
 
+    // ---------------------------------------------------------- self test
+
+    private static String exec(String cmd) {
+        try {
+            ProcessBuilder pb = new ProcessBuilder("sh", "-c", cmd);
+            pb.redirectErrorStream(true);
+            Process p = pb.start();
+            java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+            byte[] buf = new byte[4096];
+            int n;
+            java.io.InputStream in = p.getInputStream();
+            while ((n = in.read(buf)) > 0) bo.write(buf, 0, n);
+            p.waitFor();
+            return bo.toString("UTF-8").trim();
+        } catch (Throwable t) {
+            return "exec hatası: " + t;
+        }
+    }
+
+    /**
+     * Run by hand through Shizuku:
+     * CLASSPATH=base.apk app_process /system/bin com.arkaplan.app.VdService [package]
+     * Creates the trusted display, optionally launches the package on it, prints every step.
+     */
+    public static void main(String[] args) {
+        final java.io.PrintStream out = System.out;
+        Thread wd = new Thread(() -> {
+            try {
+                Thread.sleep(40000);
+            } catch (InterruptedException ignored) {
+            }
+            System.exit(2);
+        });
+        wd.setDaemon(true);
+        wd.start();
+        try {
+            out.println("1) sınıf yüklendi. Android API " + Build.VERSION.SDK_INT
+                    + ", uid " + android.os.Process.myUid());
+            VdService s = new VdService();
+            out.println("2) servis nesnesi oluştu");
+            android.media.ImageReader r = android.media.ImageReader.newInstance(
+                    1280, 720, android.graphics.PixelFormat.RGBA_8888, 2);
+            String res = s.createDisplay(r.getSurface(), 1280, 720, 240);
+            out.println("3) ekran: " + res);
+            if (res.startsWith("OK:") && args.length > 0) {
+                int id = Integer.parseInt(res.split(":")[1]);
+                out.println("4) uygulama başlatma:\n" + exec("am start -S --user 0 --display "
+                        + id + " -a android.intent.action.MAIN"
+                        + " -c android.intent.category.LAUNCHER -p " + args[0]));
+                Thread.sleep(5000);
+                String d = exec("dumpsys activity activities");
+                int shown = 0;
+                out.println("5) etkinlik durumu:");
+                for (String line : d.split("\n")) {
+                    String l = line.trim();
+                    if (shown < 12 && (l.startsWith("Display #")
+                            || l.contains("topResumedActivity")
+                            || l.contains("ResumedActivity:"))) {
+                        out.println("   " + l);
+                        shown++;
+                    }
+                }
+            }
+            s.release();
+            out.println("6) bitti");
+        } catch (Throwable t) {
+            t.printStackTrace(out);
+        }
+        System.exit(0);
+    }
+
     // ------------------------------------------------------------ helpers
 
     private <T> T call(Callable<T> c) throws Throwable {

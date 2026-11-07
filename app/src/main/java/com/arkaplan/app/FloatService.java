@@ -413,7 +413,8 @@ public class FloatService extends Service {
             sb.append("Çökme kaydı:\n").append(crash.isEmpty() ? "(yok)" : crash).append("\n");
             String log = Sh.run("logcat -d -t 4000 | grep -i -E "
                     + "'shizuku|AndroidRuntime|FATAL|arkaplan:vd|VdService'"
-                    + " | grep -v BufferQueue | tail -n 10");
+                    + " | grep -v -E 'BufferQueue|PowerHal|ScnModule|RecentTasks|mtk-brm'"
+                    + " | tail -n 10");
             sb.append("Kayıt:\n").append(log.isEmpty() ? "(ilgili satır yok)" : log);
             detail = sb.toString();
         });
