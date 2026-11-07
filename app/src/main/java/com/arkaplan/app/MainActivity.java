@@ -135,6 +135,10 @@ public class MainActivity extends Activity {
 
         shizukuStatus = text("", false);
         col.addView(shizukuStatus);
+        col.addView(text("Mesaj kutusu (butonlara basınca sonuç burada çıkar):", true));
+        log = text("-", false);
+        log.setTextIsSelectable(true);
+        col.addView(log);
         col.addView(btn("Shizuku iznini ver", v -> askShizuku()));
         col.addView(btn("Çoklu pencere ayarlarını aç", v -> enableMultiWindow()));
         col.addView(btn("Kullanıcıları (profilleri) göster", v -> showUsers()));
@@ -167,16 +171,14 @@ public class MainActivity extends Activity {
             updatePickLabel(i);
         }
 
-        col.addView(text("Kayıt", true));
-        log = text("", false);
-        log.setTextIsSelectable(true);
-        col.addView(log);
-
         setContentView(sv);
     }
 
     private void say(String s) {
-        runOnUiThread(() -> log.setText(s));
+        runOnUiThread(() -> {
+            log.setText(s);
+            android.widget.Toast.makeText(this, s, android.widget.Toast.LENGTH_LONG).show();
+        });
     }
 
     private void updatePickLabel(int i) {
