@@ -37,6 +37,7 @@ public class MainActivity extends Activity {
     private TextView shizukuStatus;
     private TextView pickLabel;
     private TextView state;
+    private TextView detailView;
 
     private final Shizuku.OnRequestPermissionResultListener permListener =
             (code, result) -> runOnUiThread(this::refresh);
@@ -135,6 +136,10 @@ public class MainActivity extends Activity {
         col.addView(btn("Kapat", v -> stopService(new Intent(this, FloatService.class))));
         state = text("", false);
         col.addView(state);
+        detailView = text("", false);
+        detailView.setTextSize(12);
+        detailView.setTextIsSelectable(true);
+        col.addView(detailView);
 
         col.addView(text("Not: Başlat, uygulamayı kapatıp yeniden açar (pencerede açılması için).",
                 false));
@@ -161,6 +166,8 @@ public class MainActivity extends Activity {
         }
         shizukuStatus.setText(s);
         state.setText("Durum: " + FloatService.status);
+        String d = FloatService.detail;
+        if (!d.contentEquals(detailView.getText())) detailView.setText(d);
     }
 
     private void askShizuku() {

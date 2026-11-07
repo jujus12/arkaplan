@@ -44,6 +44,7 @@ public class FloatService extends Service {
     private static final int VERSION = 3;
 
     public static volatile String status = "Kapalı";
+    public static volatile String detail = "";
     public static volatile boolean running = false;
 
     private final Handler ui = new Handler(Looper.getMainLooper());
@@ -72,7 +73,20 @@ public class FloatService extends Service {
                 svc = IVdService.Stub.asInterface(binder);
                 setStatus("Shizuku servisi bağlandı.");
                 tryCreate();
+            } else {
+                diagnose("Servis bağlandı ama yanıt vermiyor (binder "
+                        + (binder == null ? "yok" : "ölü") + ").");
             }
+        }
+
+        @Override
+        public void onBindingDied(ComponentName name) {
+            diagnose("Servis süreci öldü (onBindingDied).");
+        }
+
+        @Override
+        public void onNullBinding(ComponentName name) {
+            diagnose("Servis boş döndü (onNullBinding).");
         }
 
         @Override
@@ -112,6 +126,7 @@ public class FloatService extends Service {
             return START_NOT_STICKY;
         }
         running = true;
+        detail = "";
         setStatus("Pencere açılıyor...");
         buildWindow();
         bindShizuku();
@@ -372,9 +387,31 @@ public class FloatService extends Service {
                     .version(VERSION);
             Shizuku.bindUserService(args, conn);
             setStatus("Shizuku servisine bağlanılıyor...");
+            ui.postDelayed(() -> {
+                if (running && svc == null) diagnose("Servis 12 sn içinde bağlanmadı.");
+            }, 12000);
         } catch (Throwable t) {
             setStatus("Shizuku hatası: " + t);
         }
+    }
+
+    private void diagnose(String why) {
+        setStatus("Bağlantı sorunu");
+        if (bg.isShutdown()) return;
+        bg.execute(() -> {
+            StringBuilder sb = new StringBuilder(why).append("\n");
+            try {
+                sb.append("Shizuku sürüm: ").append(Shizuku.getVersion())
+                        .append(", uid: ").append(Shizuku.getUid()).append("\n");
+            } catch (Throwable t) {
+                sb.append("Shizuku bilgisi alınamadı: ").append(t).append("\n");
+            }
+            String log = Sh.run("logcat -d -t 600 | grep -i -E "
+                    + "'arkaplan|AndroidRuntime|FATAL|VdService|UserService|ServiceStarter'"
+                    + " | tail -n 14");
+            sb.append("Kayıt:\n").append(log.isEmpty() ? "(ilgili satır yok)" : log);
+            detail = sb.toString();
+        });
     }
 
     private synchronized void tryCreate() {
@@ -389,6 +426,7 @@ public class FloatService extends Service {
                 if (r == null || !r.startsWith("OK:")) {
                     created = false;
                     setStatus("Ekran hatası");
+                    detail = r == null ? "Ekran oluşturulamadı" : r;
                     toast(r == null ? "Ekran oluşturulamadı" : r);
                     return;
                 }
@@ -411,6 +449,7 @@ public class FloatService extends Service {
         String low = out.toLowerCase();
         if (low.contains("exception") || low.contains("error")) {
             setStatus("Uygulama açılamadı");
+            detail = out;
             toast("Uygulama açılamadı:\n" + out);
         } else {
             setStatus("Çalışıyor (ekran " + displayId + ")");
