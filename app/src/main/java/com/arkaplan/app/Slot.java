@@ -79,9 +79,13 @@ public class Slot {
         }
         startMs = SystemClock.elapsedRealtime();
 
-        String comp = Sh.run("cmd package resolve-activity --brief"
-                + " -a android.intent.action.MAIN -c android.intent.category.LAUNCHER"
-                + " --user " + userId + " " + pkg + " | tail -n 1");
+        String comp = Sh.run("cmd package resolve-activity --brief --user " + userId
+                + " -a android.intent.action.MAIN -c android.intent.category.LAUNCHER "
+                + pkg + " | tail -n 1");
+        if (!comp.contains("/")) {
+            comp = Sh.run("cmd package resolve-activity --brief --user " + userId
+                    + " " + pkg + " | tail -n 1");
+        }
         if (!comp.contains("/")) {
             stop();
             return "Oyun bu kullanıcıda bulunamadı (kullanıcı " + userId + "): " + comp;
