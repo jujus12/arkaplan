@@ -97,12 +97,25 @@ public class Slot {
             comp = Sh.run("cmd package resolve-activity --brief --user " + userId
                     + " " + pkg + " | tail -n 1");
         }
-        if (!comp.contains("/")) {
-            stop();
-            return "Oyun bu kullanıcıda bulunamadı (kullanıcı " + userId + "): " + comp;
+        String out;
+        if (comp.contains("/")) {
+            out = Sh.run("am start --user " + userId + " --display " + displayId
+                    + " -n " + comp);
+        } else {
+            // Fallback: let the system pick the launcher activity of the package.
+            out = Sh.run("am start --user " + userId + " --display " + displayId
+                    + " -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -p "
+                    + pkg);
         }
-        String out = Sh.run("am start --user " + userId + " --display " + displayId
-                + " -n " + comp);
+        String lower = out.toLowerCase();
+        if (lower.contains("error") || lower.contains("exception")
+                || lower.contains("does not exist")) {
+            String inst = Sh.run("pm list packages --user " + userId + " " + pkg);
+            stop();
+            return "Oyun açılamadı (kullanıcı " + userId + ", paket " + pkg + ").\n"
+                    + "Komut sonucu: " + out + "\n"
+                    + "Bu kullanıcıda kurulu mu: " + (inst.isEmpty() ? "HAYIR / bulunamadı" : inst);
+        }
         return "Sanal ekran " + displayId + " açıldı.\n" + out;
     }
 
