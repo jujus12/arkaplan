@@ -323,6 +323,11 @@ public class MainActivity extends Activity {
             say("Önce oyunu başlat.");
             return;
         }
+        if (Slot.OVERLAY_MODE) {
+            say("Bu modda ayrı görüntü penceresi gerekmez: oyun ekranındaki küçük "
+                    + "\"Overlay\" penceresinde görünür, dokunabilirsin.");
+            return;
+        }
         if (!android.provider.Settings.canDrawOverlays(this)) {
             say("Üstte gösterme izni lazım. Açılan ekranda Arka Plan'a izin ver, "
                     + "geri gelip tekrar Görüntü'ye bas.");
@@ -353,6 +358,13 @@ public class MainActivity extends Activity {
                 slotStatus[i].setText("Durum: kapalı");
                 lastFrames[i] = 0;
                 lastTick[i] = now;
+                continue;
+            }
+            if (Slot.OVERLAY_MODE) {
+                slotStatus[i].setText("Durum: çalışıyor | ikinci ekran " + s.displayId
+                        + " | süre: " + (now - s.startMs) / 1000 + " sn"
+                        + "\nOyun, ekrandaki küçük \"Overlay\" penceresinde görünür ve "
+                        + "dokunabilirsin.");
                 continue;
             }
             long f = s.frames;
