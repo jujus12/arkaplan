@@ -29,15 +29,16 @@ import rikka.shizuku.Shizuku;
 
 public class MainActivity extends Activity {
     private static final int REQ_SHIZUKU = 100;
+    private static final int N = FloatService.SLOTS;
 
     private final Handler ui = new Handler(Looper.getMainLooper());
     private SharedPreferences prefs;
-    private String pkg = "";
+    private final String[] pkgs = new String[N];
 
     private TextView shizukuStatus;
-    private TextView pickLabel;
-    private TextView state;
-    private TextView detailView;
+    private final TextView[] pickLabel = new TextView[N];
+    private final TextView[] state = new TextView[N];
+    private final TextView[] detailView = new TextView[N];
 
     private final Shizuku.OnRequestPermissionResultListener permListener =
             (code, result) -> runOnUiThread(this::refresh);
@@ -58,7 +59,10 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle b) {
         super.onCreate(b);
         prefs = getSharedPreferences("arkaplan", MODE_PRIVATE);
-        pkg = prefs.getString("pkg", "");
+        for (int i = 0; i < N; i++) {
+            String old = i == 0 ? prefs.getString("pkg", "") : "";
+            pkgs[i] = prefs.getString("pkg" + i, old);
+        }
         buildUi();
         Shizuku.addBinderReceivedListenerSticky(binderListener);
         Shizuku.addBinderDeadListener(deadListener);
@@ -118,25 +122,44 @@ public class MainActivity extends Activity {
         sv.addView(col);
 
         col.addView(text("Arka Plan", true));
-        col.addView(text("Seçtiğin uygulama ekranda küçük bir pencerede üstte durur. "
-                + "Başka uygulamalara dokunsan da arka plana düşmez. "
-                + "Pencerenin üstündeki çubuktan saydamlığı ayarlarsın.", false));
+        col.addView(text("Seçtiğin uygulamalar ekranda küçük pencerelerde üstte durur. "
+                + "Başka uygulamalara dokunsan da arka plana düşmezler.\n"
+                + "Pencere çubuğu: yazıdan sürükle · kaydırıcı saydamlık · "
+                + "👆/🚫 dokunuşları pencere alsın/arkadaki ekrana geçsin · −/+ boyut · ✕ kapat.",
+                false));
 
         shizukuStatus = text("", false);
         col.addView(shizukuStatus);
         col.addView(btn("Shizuku iznini ver", v -> askShizuku()));
 
-        col.addView(text("1) Uygulama", true));
-        pickLabel = text("", false);
-        col.addView(pickLabel);
-        col.addView(btn("Uygulama seç", v -> pickApp()));
+        for (int i = 0; i < N; i++) {
+            final int idx = i;
+            col.addView(text("Pencere " + (i + 1), true));
+            pickLabel[i] = text("", false);
+            col.addView(pickLabel[i]);
+            col.addView(btn("Uygulama seç", v -> pickApp(idx)));
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.addView(btn("Aç / başlat", v -> startPane(idx)), new LinearLayout.LayoutParams(
+                    0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+            row.addView(btn("Kapat", v -> stopPane(idx)), new LinearLayout.LayoutParams(
+                    0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+            col.addView(row);
+            state[i] = text("", false);
+            col.addView(state[i]);
+            detailView[i] = text("", false);
+            detailView[i].setTextSize(12);
+            detailView[i].setTextIsSelectable(true);
+            col.addView(detailView[i]);
+        }
 
-        col.addView(text("2) Başlat", true));
-        col.addView(btn("Pencereyi aç ve uygulamayı başlat", v -> startFloat()));
-        col.addView(btn("Kapat", v -> stopService(new Intent(this, FloatService.class))));
+        col.addView(text("Not: Başlat, uygulamayı kapatıp yeniden açar. "
+                + "Aynı uygulama iki pencerede açılamaz.", false));
+
+        col.addView(text("Teşhis", true));
+        col.addView(btn("Ekran testi (Pencere 1'in uygulaması)", v -> runSelfTest()));
         col.addView(btn("Eski ikinci ekranı kapat (Yer Paylaşımı / Overlay)", v -> {
-            if (!Shizuku.pingBinder()
-                    || Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
+            if (!shizukuReady()) {
                 Toast.makeText(this, "Önce Shizuku'yu başlat ve izni ver.",
                         Toast.LENGTH_LONG).show();
                 return;
@@ -149,22 +172,21 @@ public class MainActivity extends Activity {
                         Toast.LENGTH_LONG).show());
             }).start();
         }));
-        col.addView(btn("Ekran testi (sorun arıyorum)", v -> runSelfTest()));
-        state = text("", false);
-        col.addView(state);
-        detailView = text("", false);
-        detailView.setTextSize(12);
-        detailView.setTextIsSelectable(true);
-        col.addView(detailView);
-
-        col.addView(text("Not: Başlat, uygulamayı kapatıp yeniden açar (pencerede açılması için).",
-                false));
         setContentView(sv);
-        updatePick();
+        for (int i = 0; i < N; i++) updatePick(i);
     }
 
-    private void updatePick() {
-        pickLabel.setText("Uygulama: " + (pkg.isEmpty() ? "seçilmedi" : pkg));
+    private void updatePick(int i) {
+        pickLabel[i].setText("Uygulama: " + (pkgs[i].isEmpty() ? "seçilmedi" : pkgs[i]));
+    }
+
+    private boolean shizukuReady() {
+        try {
+            return Shizuku.pingBinder()
+                    && Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED;
+        } catch (Throwable t) {
+            return false;
+        }
     }
 
     private void refresh() {
@@ -181,9 +203,11 @@ public class MainActivity extends Activity {
             s = "Shizuku: hata " + t;
         }
         shizukuStatus.setText(s);
-        state.setText("Durum: " + FloatService.status);
-        String d = FloatService.detail;
-        if (!d.contentEquals(detailView.getText())) detailView.setText(d);
+        for (int i = 0; i < N; i++) {
+            state[i].setText("Durum: " + FloatService.status[i]);
+            String d = FloatService.detail[i];
+            if (!d.contentEquals(detailView[i].getText())) detailView[i].setText(d);
+        }
     }
 
     private void askShizuku() {
@@ -198,7 +222,7 @@ public class MainActivity extends Activity {
         refresh();
     }
 
-    private void pickApp() {
+    private void pickApp(int idx) {
         Intent i = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER);
         PackageManager pm = getPackageManager();
         List<ResolveInfo> list = pm.queryIntentActivities(i, 0);
@@ -214,41 +238,17 @@ public class MainActivity extends Activity {
             names[k] = items.get(k)[0] + "\n" + items.get(k)[1];
         }
         new AlertDialog.Builder(this)
-                .setTitle("Uygulamayı seç")
+                .setTitle("Pencere " + (idx + 1) + " için uygulama seç")
                 .setItems(names, (d, which) -> {
-                    pkg = items.get(which)[1];
-                    prefs.edit().putString("pkg", pkg).apply();
-                    updatePick();
+                    pkgs[idx] = items.get(which)[1];
+                    prefs.edit().putString("pkg" + idx, pkgs[idx]).apply();
+                    updatePick(idx);
                 })
                 .show();
     }
 
-    private void runSelfTest() {
-        try {
-            if (!Shizuku.pingBinder()
-                    || Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
-                Toast.makeText(this, "Önce Shizuku'yu başlat ve izni ver.",
-                        Toast.LENGTH_LONG).show();
-                return;
-            }
-        } catch (Throwable t) {
-            Toast.makeText(this, "Shizuku hatası: " + t, Toast.LENGTH_LONG).show();
-            return;
-        }
-        FloatService.status = "Ekran testi çalışıyor (40 sn'ye kadar)...";
-        FloatService.detail = "";
-        final String apk = getPackageCodePath();
-        final String p = pkg;
-        new Thread(() -> {
-            String out = Sh.run("CLASSPATH=" + apk + " app_process /system/bin "
-                    + VdService.class.getName() + " test " + p);
-            FloatService.detail = out.isEmpty() ? "(çıktı yok)" : out;
-            FloatService.status = "Ekran testi bitti";
-        }).start();
-    }
-
-    private void startFloat() {
-        if (pkg.isEmpty()) {
+    private void startPane(int idx) {
+        if (pkgs[idx].isEmpty()) {
             Toast.makeText(this, "Önce uygulama seç.", Toast.LENGTH_LONG).show();
             return;
         }
@@ -259,23 +259,42 @@ public class MainActivity extends Activity {
                     Uri.parse("package:" + getPackageName())));
             return;
         }
-        try {
-            if (!Shizuku.pingBinder()
-                    || Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
-                Toast.makeText(this, "Önce Shizuku'yu başlat ve izni ver.",
-                        Toast.LENGTH_LONG).show();
-                return;
-            }
-        } catch (Throwable t) {
-            Toast.makeText(this, "Shizuku hatası: " + t, Toast.LENGTH_LONG).show();
+        if (!shizukuReady()) {
+            Toast.makeText(this, "Önce Shizuku'yu başlat ve izni ver.",
+                    Toast.LENGTH_LONG).show();
             return;
         }
-        stopService(new Intent(this, FloatService.class));
         Intent i = new Intent(this, FloatService.class)
-                .putExtra("pkg", pkg)
+                .setAction(FloatService.ACTION_START)
+                .putExtra("slot", idx)
+                .putExtra("pkg", pkgs[idx])
                 .putExtra("w", 1280)
                 .putExtra("h", 720)
                 .putExtra("dpi", 240);
         startForegroundService(i);
+    }
+
+    private void stopPane(int idx) {
+        startService(new Intent(this, FloatService.class)
+                .setAction(FloatService.ACTION_STOP)
+                .putExtra("slot", idx));
+    }
+
+    private void runSelfTest() {
+        if (!shizukuReady()) {
+            Toast.makeText(this, "Önce Shizuku'yu başlat ve izni ver.",
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+        FloatService.status[0] = "Ekran testi çalışıyor (40 sn'ye kadar)...";
+        FloatService.detail[0] = "";
+        final String apk = getPackageCodePath();
+        final String p = pkgs[0];
+        new Thread(() -> {
+            String out = Sh.run("CLASSPATH=" + apk + " app_process /system/bin "
+                    + VdService.class.getName() + " test " + p);
+            FloatService.detail[0] = out.isEmpty() ? "(çıktı yok)" : out;
+            FloatService.status[0] = "Ekran testi bitti";
+        }).start();
     }
 }
